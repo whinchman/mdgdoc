@@ -149,8 +149,11 @@ async fn cmd_upload(
 
     run_pandoc(&input, &temp_docx, reference_doc.as_deref())?;
 
-    let token = get_token(&cfg).await?;
-    let file = upload_docx(&token, &temp_docx, doc_name, folder_id).await?;
+    let upload_result = async {
+        let token = get_token(&cfg).await?;
+        upload_docx(&token, &temp_docx, doc_name, folder_id).await
+    }
+    .await;
 
     if !keep_docx {
         if let Err(e) = std::fs::remove_file(&temp_docx) {
@@ -160,6 +163,8 @@ async fn cmd_upload(
             );
         }
     }
+
+    let file = upload_result?;
 
     println!("Uploaded: {}", file.name);
     println!("Link:     {}", file.web_view_link);
