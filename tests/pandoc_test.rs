@@ -10,7 +10,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// When pandoc is not on PATH the error message must mention the install URL.
 #[test]
 fn run_pandoc_missing_binary_error_mentions_install_url() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     // Save the original PATH so we can restore it unconditionally.
     let original_path = std::env::var_os("PATH");
@@ -25,7 +25,7 @@ fn run_pandoc_missing_binary_error_mentions_install_url() {
         None,
     );
 
-    // Restore PATH unconditionally before any assert.
+    // Safety: ENV_LOCK is still held — restore PATH unconditionally before any assert.
     match original_path {
         Some(p) => unsafe { std::env::set_var("PATH", p) },
         None => unsafe { std::env::remove_var("PATH") },
@@ -43,7 +43,7 @@ fn run_pandoc_missing_binary_error_mentions_install_url() {
 /// "pandoc exited".
 #[test]
 fn run_pandoc_nonzero_exit_returns_error() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     if pandoc_path().is_none() {
         eprintln!("skipping: pandoc not installed on PATH");
@@ -69,7 +69,7 @@ fn run_pandoc_nonzero_exit_returns_error() {
 /// writes the output file.
 #[test]
 fn run_pandoc_success_produces_output_file() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     if pandoc_path().is_none() {
         eprintln!("skipping: pandoc not installed on PATH");
@@ -87,6 +87,33 @@ fn run_pandoc_success_produces_output_file() {
     assert!(
         output.exists(),
         "output .docx should exist after run_pandoc"
+    );
+}
+
+/// `--template none` path: run_pandoc with no reference doc succeeds and
+/// produces output without requiring a config file.
+#[test]
+fn run_pandoc_template_none_no_config_required() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    if pandoc_path().is_none() {
+        eprintln!("skipping: pandoc not installed on PATH");
+        return;
+    }
+
+    let tmp = tempdir().expect("create temp dir");
+    let input = tmp.path().join("sample.md");
+    let output = tmp.path().join("sample.docx");
+
+    std::fs::write(&input, "# Hello\n\nWorld.\n").expect("write markdown");
+
+    // Passing `None` as reference_doc mirrors what cmd_convert does when
+    // template == "none" — no config file is loaded at all.
+    run_pandoc(&input, &output, None).expect("run_pandoc with no reference doc should succeed");
+
+    assert!(
+        output.exists(),
+        "output .docx should exist when template is 'none'"
     );
 }
 

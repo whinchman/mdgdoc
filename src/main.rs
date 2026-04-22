@@ -92,8 +92,12 @@ fn cmd_convert(
     template: String,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let reference_doc = config::template_path(&cfg, &template)?;
+    let reference_doc = if template == "none" {
+        None
+    } else {
+        let cfg = config::load_config(config_path)?;
+        config::template_path(&cfg, &template)?
+    };
 
     let out = match output {
         Some(p) => p,
