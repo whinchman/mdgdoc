@@ -159,6 +159,7 @@ fn cmd_pdf(
             std::fs::copy(&tmp_pdf, &final_pdf)?;
             let _ = std::fs::remove_file(&tmp_pdf);
         } else {
+            let _ = std::fs::remove_file(&tmp_pdf);
             return Err(e.into());
         }
     }

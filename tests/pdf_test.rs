@@ -26,7 +26,7 @@ fn run_libreoffice_missing_binary_error_mentions_path() {
     let fake_docx = tmp.path().join("fake.docx");
     let result = run_libreoffice(&fake_docx, tmp.path());
 
-    // Restore PATH unconditionally before any assert.
+    // Safety: ENV_LOCK is still held — restore PATH unconditionally before any assert.
     match original_path {
         Some(p) => unsafe { std::env::set_var("PATH", p) },
         None => unsafe { std::env::remove_var("PATH") },
@@ -69,7 +69,7 @@ fn run_pandoc_missing_propagates_in_pdf_flow() {
     // Simulate what cmd_pdf does: first call run_pandoc, only call run_libreoffice on success.
     let pandoc_result = run_pandoc(&input, &temp_docx, None);
 
-    // Restore PATH unconditionally before any assert.
+    // Safety: ENV_LOCK is still held — restore PATH unconditionally before any assert.
     match original_path {
         Some(p) => unsafe { std::env::set_var("PATH", p) },
         None => unsafe { std::env::remove_var("PATH") },
