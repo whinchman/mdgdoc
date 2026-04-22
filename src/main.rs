@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 use mdgdoc::config;
+use mdgdoc::drive::{get_token, resolve_doc_name, resolve_folder_id, upload_docx};
 use mdgdoc::pandoc::run_pandoc;
-
-mod drive;
 
 /// Markdown → styled docx / Google Doc / PDF
 #[derive(Parser)]
@@ -78,7 +78,13 @@ async fn main() -> Result<()> {
             template,
             output,
         } => cmd_convert(cli.config, input, template, output)?,
-        Cmd::Upload { .. } => todo!("not yet implemented"),
+        Cmd::Upload {
+            input,
+            template,
+            folder,
+            name,
+            keep_docx,
+        } => cmd_upload(cli.config, input, template, folder, name, keep_docx).await?,
         Cmd::Pdf { .. } => todo!("not yet implemented"),
     }
 
@@ -106,6 +112,57 @@ fn cmd_convert(
 
     run_pandoc(&input, &out, reference_doc.as_deref())?;
     println!("Converted: {}", out.display());
+    Ok(())
+}
+
+/// Convert a markdown file to docx then upload it as a native Google Doc.
+async fn cmd_upload(
+    config_path: Option<PathBuf>,
+    input: PathBuf,
+    template: String,
+    folder: Option<String>,
+    name: Option<String>,
+    keep_docx: bool,
+) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+
+    // Resolve folder ID — BUG-001: treat Some("") as None.
+    let config_folder = cfg.default_folder_id.as_deref().filter(|s| !s.is_empty());
+    let folder_id = resolve_folder_id(folder.as_deref(), config_folder)?;
+
+    // Resolve doc name.
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("input path has no valid file stem"))?;
+    let doc_name = resolve_doc_name(name.as_deref(), stem);
+
+    // Resolve reference doc template.
+    let reference_doc = if template == "none" {
+        None
+    } else {
+        config::template_path(&cfg, &template)?
+    };
+
+    // Build temp docx path: <tmp>/<stem>-<uuid>.docx
+    let temp_docx = std::env::temp_dir().join(format!("{stem}-{}.docx", Uuid::new_v4()));
+
+    run_pandoc(&input, &temp_docx, reference_doc.as_deref())?;
+
+    let token = get_token(&cfg).await?;
+    let file = upload_docx(&token, &temp_docx, doc_name, folder_id).await?;
+
+    if !keep_docx {
+        if let Err(e) = std::fs::remove_file(&temp_docx) {
+            eprintln!(
+                "Warning: could not delete temp file {}: {e}",
+                temp_docx.display()
+            );
+        }
+    }
+
+    println!("Uploaded: {}", file.name);
+    println!("Link:     {}", file.web_view_link);
     Ok(())
 }
 
