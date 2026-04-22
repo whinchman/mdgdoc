@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-use crate::templates::templates_dir;
+use crate::templates::{templates_dir, validate_template_name};
 
 /// Top-level configuration for mdgdoc.
 #[derive(Debug, Deserialize)]
@@ -59,6 +59,7 @@ pub fn template_path(name: &str) -> Result<Option<PathBuf>> {
     if name == "none" {
         return Ok(None);
     }
+    validate_template_name(name)?;
     let path = templates_dir()?.join(format!("{name}.docx"));
     if path.exists() {
         Ok(Some(path))

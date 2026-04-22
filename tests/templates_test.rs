@@ -1,6 +1,12 @@
 use mdgdoc::config::template_path;
+use mdgdoc::templates;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+/// A process-wide lock that serialises every test that mutates `MDGDOC_TEMPLATES_DIR`
+/// so they cannot race against each other.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
 // Helper: create a fake templates directory with named .docx stubs
@@ -44,9 +50,12 @@ fn list_templates_returns_sorted_stems() {
 // cmd_scrape — fresh install
 // ---------------------------------------------------------------------------
 
-/// cmd_scrape copies a .docx to dest_dir/<name>.docx when no collision exists.
+/// cmd_scrape copies a .docx to the templates dir as <name>.docx when no
+/// collision exists.
 #[test]
 fn cmd_scrape_copies_file_to_templates_dir() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
     let src_dir = TempDir::new().expect("src tempdir");
     let dest_dir = TempDir::new().expect("dest tempdir");
 
@@ -54,12 +63,18 @@ fn cmd_scrape_copies_file_to_templates_dir() {
     let src = src_dir.path().join("report.docx");
     std::fs::write(&src, b"PK stub content").expect("write src");
 
-    // Run scrape with a dest override (we pass the dest path via the public API).
-    // Because cmd_scrape always writes to templates_dir(), we use a wrapper that
-    // lets tests supply a custom directory.
-    let dest = dest_dir.path().join("report.docx");
-    std::fs::copy(&src, &dest).expect("copy"); // simulate what cmd_scrape does
+    // Redirect templates_dir() to the temp destination.
+    // Safety: single-threaded access guaranteed by ENV_LOCK.
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", dest_dir.path()) };
 
+    let result = templates::cmd_scrape(&src, Some("report"), false);
+
+    // Remove env var unconditionally before any assert.
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    result.expect("cmd_scrape should succeed");
+
+    let dest = dest_dir.path().join("report.docx");
     assert!(dest.exists(), "scraped file should exist");
     assert_eq!(std::fs::read(&dest).expect("read dest"), b"PK stub content");
 }
@@ -67,11 +82,12 @@ fn cmd_scrape_copies_file_to_templates_dir() {
 /// cmd_scrape with force=true overwrites an existing file silently.
 #[test]
 fn cmd_scrape_force_overwrites_without_prompt() {
-    // We test the low-level logic: if force=true the destination is overwritten.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
     let src_dir = TempDir::new().expect("src tempdir");
     let dest_dir = TempDir::new().expect("dest tempdir");
 
-    // Pre-existing destination.
+    // Pre-existing destination in the templates dir.
     let dest = dest_dir.path().join("existing.docx");
     std::fs::write(&dest, b"old content").expect("write old dest");
 
@@ -79,13 +95,67 @@ fn cmd_scrape_force_overwrites_without_prompt() {
     let src = src_dir.path().join("existing.docx");
     std::fs::write(&src, b"new content").expect("write src");
 
-    // Mimic force overwrite.
-    std::fs::copy(&src, &dest).expect("copy");
+    // Redirect templates_dir() to the temp destination.
+    // Safety: single-threaded access guaranteed by ENV_LOCK.
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", dest_dir.path()) };
+
+    let result = templates::cmd_scrape(&src, Some("existing"), true);
+
+    // Remove env var unconditionally before any assert.
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    result.expect("force cmd_scrape should succeed");
 
     assert_eq!(
         std::fs::read(&dest).expect("read"),
         b"new content",
         "force overwrite should replace old content"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// validate_template_name (via cmd_scrape / template_path)
+// ---------------------------------------------------------------------------
+
+/// A template name containing `..` must be rejected.
+#[test]
+fn template_name_with_dotdot_is_rejected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let src_dir = TempDir::new().expect("src tempdir");
+    let dest_dir = TempDir::new().expect("dest tempdir");
+    let src = src_dir.path().join("evil.docx");
+    std::fs::write(&src, b"evil").expect("write src");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", dest_dir.path()) };
+    let result = templates::cmd_scrape(&src, Some("../evil"), false);
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    let err = result.expect_err("expected error for '..' in template name");
+    assert!(
+        err.to_string().contains("plain filename"),
+        "error should mention plain filename, got: {err}"
+    );
+}
+
+/// A template name containing a `/` must be rejected.
+#[test]
+fn template_name_with_slash_is_rejected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let src_dir = TempDir::new().expect("src tempdir");
+    let dest_dir = TempDir::new().expect("dest tempdir");
+    let src = src_dir.path().join("evil.docx");
+    std::fs::write(&src, b"evil").expect("write src");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", dest_dir.path()) };
+    let result = templates::cmd_scrape(&src, Some("sub/evil"), false);
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    let err = result.expect_err("expected error for '/' in template name");
+    assert!(
+        err.to_string().contains("plain filename"),
+        "error should mention plain filename, got: {err}"
     );
 }
 

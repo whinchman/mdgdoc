@@ -3,8 +3,28 @@
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 
+/// Validate that `name` is a plain filename with no path separators or `..`.
+///
+/// A valid template name must consist of exactly one `Normal` path component
+/// and nothing else, so that it cannot escape the templates directory.
+pub(crate) fn validate_template_name(name: &str) -> Result<()> {
+    let p = std::path::Path::new(name);
+    let mut components = p.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => bail!("template name must be a plain filename with no path separators or '..'"),
+    }
+}
+
 /// Return the templates directory: `~/.config/mdgdoc/templates/`.
+///
+/// If the `MDGDOC_TEMPLATES_DIR` environment variable is set, its value is
+/// used instead of the XDG config directory.  This allows tests to redirect
+/// template operations to a temporary directory.
 pub fn templates_dir() -> Result<PathBuf> {
+    if let Ok(override_dir) = std::env::var("MDGDOC_TEMPLATES_DIR") {
+        return Ok(PathBuf::from(override_dir));
+    }
     let dir = dirs::config_dir()
         .ok_or_else(|| anyhow!("cannot determine config directory"))?
         .join("mdgdoc")
@@ -55,6 +75,8 @@ pub fn cmd_scrape(src: &Path, name: Option<&str>, force: bool) -> Result<()> {
             .to_string(),
     };
 
+    validate_template_name(&stem)?;
+
     let dir = templates_dir()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| anyhow!("creating templates dir {}: {e}", dir.display()))?;
@@ -66,7 +88,12 @@ pub fn cmd_scrape(src: &Path, name: Option<&str>, force: bool) -> Result<()> {
             inquire::Confirm::new(&format!("Template '{stem}' already exists. Overwrite?"))
                 .with_default(false)
                 .prompt()
-                .map_err(|e| anyhow!("prompt error: {e}"))?;
+                .map_err(|e| match e {
+                    inquire::InquireError::NotTTY => {
+                        anyhow!("Not a TTY — use --force to skip the overwrite prompt.")
+                    }
+                    other => anyhow!("prompt error: {other}"),
+                })?;
 
         if !answer {
             bail!("Aborted.");
