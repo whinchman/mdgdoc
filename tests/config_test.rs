@@ -18,8 +18,6 @@ fn load_config_expands_tilde() {
     let yaml = "\
 credentials_path: ~/some/credentials.json
 token_path: ~/some/token.json
-templates:
-  default: ~/templates/default.docx
 ";
     let mut tmp = NamedTempFile::new().expect("create temp file");
     tmp.write_all(yaml.as_bytes()).expect("write yaml");
@@ -37,46 +35,19 @@ templates:
         "token_path should have ~ expanded, got: {}",
         cfg.token_path.display()
     );
-    for (name, path) in &cfg.templates {
-        assert!(
-            !path.to_string_lossy().starts_with('~'),
-            "template '{name}' path should have ~ expanded, got: {}",
-            path.display()
-        );
-    }
 }
 
 /// `template_path` returns `None` for the special name `"none"`.
 #[test]
 fn template_path_none_returns_none() {
-    let yaml = "\
-credentials_path: /tmp/creds.json
-token_path: /tmp/token.json
-";
-    let mut tmp = NamedTempFile::new().expect("create temp file");
-    tmp.write_all(yaml.as_bytes()).expect("write yaml");
-    tmp.flush().expect("flush");
-
-    let cfg = load_config(Some(tmp.path().to_path_buf())).expect("load config");
-    let result = template_path(&cfg, "none").expect("template_path should not error for 'none'");
+    let result = template_path("none").expect("template_path should not error for 'none'");
     assert!(result.is_none());
 }
 
 /// `template_path` returns an error for an unknown template name.
 #[test]
 fn template_path_unknown_returns_error() {
-    let yaml = "\
-credentials_path: /tmp/creds.json
-token_path: /tmp/token.json
-templates:
-  default: /tmp/default.docx
-";
-    let mut tmp = NamedTempFile::new().expect("create temp file");
-    tmp.write_all(yaml.as_bytes()).expect("write yaml");
-    tmp.flush().expect("flush");
-
-    let cfg = load_config(Some(tmp.path().to_path_buf())).expect("load config");
-    let result = template_path(&cfg, "does-not-exist");
+    let result = template_path("__nonexistent_template_xyz_12345__");
     assert!(result.is_err(), "expected error for unknown template name");
 }
 
@@ -100,10 +71,6 @@ token_path: /tmp/token.json
     assert!(
         cfg.default_folder_id.is_none(),
         "default_folder_id should be None when absent"
-    );
-    assert!(
-        cfg.templates.is_empty(),
-        "templates map should be empty when absent"
     );
 }
 
@@ -135,44 +102,19 @@ fn load_config_missing_required_field_returns_error() {
     );
 }
 
-/// `template_path` returns the correct `PathBuf` for a known template name.
-#[test]
-fn template_path_known_name_returns_path() {
-    let yaml = "\
-credentials_path: /tmp/creds.json
-token_path: /tmp/token.json
-templates:
-  report: /tmp/report.docx
-";
-    let mut tmp = NamedTempFile::new().expect("create temp file");
-    tmp.write_all(yaml.as_bytes()).expect("write yaml");
-    tmp.flush().expect("flush");
-
-    let cfg = load_config(Some(tmp.path().to_path_buf())).expect("load config");
-    let path = template_path(&cfg, "report")
-        .expect("template_path should not error for a known name")
-        .expect("expected Some(path) for a known template");
-    assert_eq!(path, std::path::PathBuf::from("/tmp/report.docx"));
-}
-
 /// `write_default_config` produces a file that `load_config` can successfully parse.
 #[test]
 fn write_default_config_produces_loadable_config() {
     let tmp_dir = tempfile::tempdir().expect("create temp dir");
     let config_path = tmp_dir.path().join("config.yaml");
-    // write_default_config also needs the templates/ subdir to be reachable;
-    // the function itself only writes a file — it does not create directories.
     write_default_config(&config_path).expect("write default config");
 
     let cfg = load_config(Some(config_path)).expect("load default config");
     // The scaffolded config writes default_folder_id: "" which deserializes as Some("").
-    // Verify that the field is present (Some) and contains an empty string — documenting
-    // the known behaviour flagged by the code reviewer (see task Notes).
     assert_eq!(
         cfg.default_folder_id,
         Some(String::new()),
-        "scaffolded config: default_folder_id should be Some(\"\") (empty string) — \
-         see code-review warning about treating this as None in upload logic"
+        "scaffolded config: default_folder_id should be Some(\"\") (empty string)"
     );
     // credentials_path and token_path should be absolute (no tilde).
     assert!(
@@ -185,9 +127,18 @@ fn write_default_config_produces_loadable_config() {
         "token_path should be absolute after tilde expansion, got: {}",
         cfg.token_path.display()
     );
-    // The default template entry should exist.
+}
+
+/// `write_default_config` no longer emits a `templates:` stanza.
+#[test]
+fn write_default_config_has_no_templates_stanza() {
+    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let config_path = tmp_dir.path().join("config.yaml");
+    write_default_config(&config_path).expect("write default config");
+
+    let contents = std::fs::read_to_string(&config_path).expect("read config");
     assert!(
-        cfg.templates.contains_key("default"),
-        "scaffolded config should contain a 'default' template entry"
+        !contents.contains("templates:"),
+        "default config should not contain a templates: stanza, got:\n{contents}"
     );
 }

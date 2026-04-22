@@ -2,8 +2,9 @@
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::templates::templates_dir;
 
 /// Top-level configuration for mdgdoc.
 #[derive(Debug, Deserialize)]
@@ -15,9 +16,6 @@ pub struct Config {
     /// Default Google Drive folder ID for uploads.
     #[serde(default)]
     pub default_folder_id: Option<String>,
-    /// Named reference-doc templates keyed by template name.
-    #[serde(default)]
-    pub templates: HashMap<String, PathBuf>,
 }
 
 /// Expand `~` in a `PathBuf` via `shellexpand::tilde`.
@@ -48,28 +46,28 @@ pub fn load_config(path: Option<PathBuf>) -> Result<Config> {
     // Expand ~ in every PathBuf field.
     cfg.credentials_path = expand_path(cfg.credentials_path);
     cfg.token_path = expand_path(cfg.token_path);
-    cfg.templates = cfg
-        .templates
-        .into_iter()
-        .map(|(k, v)| (k, expand_path(v)))
-        .collect();
 
     Ok(cfg)
 }
 
-/// Resolve a template name to a `PathBuf`.
+/// Resolve a template name to an `Option<PathBuf>`.
 ///
-/// Returns `None` when `name` is `"none"` (bypass reference doc).
-/// Returns an error if the name is not found in the template map.
-pub fn template_path(cfg: &Config, name: &str) -> Result<Option<PathBuf>> {
+/// - `"none"` → `Ok(None)` (bypass reference doc)
+/// - any other name → look up `~/.config/mdgdoc/templates/<name>.docx`;
+///   returns an error if the file does not exist
+pub fn template_path(name: &str) -> Result<Option<PathBuf>> {
     if name == "none" {
         return Ok(None);
     }
-    cfg.templates
-        .get(name)
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| anyhow!("template '{name}' not found in config"))
+    let path = templates_dir()?.join(format!("{name}.docx"));
+    if path.exists() {
+        Ok(Some(path))
+    } else {
+        Err(anyhow!(
+            "template '{name}' not found (expected at {})",
+            path.display()
+        ))
+    }
 }
 
 /// Write the default config YAML template to `dest`.
@@ -77,19 +75,14 @@ pub fn write_default_config(dest: &Path) -> Result<()> {
     let config_dir = dest
         .parent()
         .ok_or_else(|| anyhow!("config path has no parent directory"))?;
-    let templates_dir = config_dir.join("templates");
 
     let content = format!(
         "\
 credentials_path: {config_dir}/credentials.json
 token_path: {config_dir}/token.json
 default_folder_id: \"\"
-
-templates:
-  default: {templates_dir}/default.docx
 ",
         config_dir = config_dir.display(),
-        templates_dir = templates_dir.display(),
     );
 
     std::fs::write(dest, content).map_err(|e| anyhow!("writing config {}: {e}", dest.display()))?;
