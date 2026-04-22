@@ -117,6 +117,69 @@ fn run_pandoc_template_none_no_config_required() {
     );
 }
 
+/// When a valid reference doc is provided, run_pandoc should pass
+/// `--reference-doc` to pandoc and produce an output file.
+///
+/// This exercises the `if let Some(r) = reference_doc` branch in pandoc.rs.
+#[test]
+fn run_pandoc_with_reference_doc_produces_output() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    if pandoc_path().is_none() {
+        eprintln!("skipping: pandoc not installed on PATH");
+        return;
+    }
+
+    let tmp = tempdir().expect("create temp dir");
+    let input = tmp.path().join("sample.md");
+    let output = tmp.path().join("sample.docx");
+
+    std::fs::write(&input, "# Hello\n\nWorld.\n").expect("write markdown");
+
+    // Produce a minimal reference docx by first converting without a template,
+    // then use that docx as its own reference doc for a second conversion.
+    // This guarantees the reference-doc path exists and is a real .docx.
+    run_pandoc(&input, &output, None).expect("first conversion should succeed");
+    assert!(output.exists(), "first output .docx should exist");
+
+    // Second output to a different path, using the first as a reference doc.
+    let output2 = tmp.path().join("sample_styled.docx");
+    run_pandoc(&input, &output2, Some(output.as_path()))
+        .expect("run_pandoc with reference_doc should succeed");
+
+    assert!(
+        output2.exists(),
+        "styled output .docx should exist when a reference doc is provided"
+    );
+}
+
+/// When an invalid (non-existent) reference doc is provided, pandoc exits with
+/// a non-zero status and run_pandoc returns an error mentioning "pandoc exited".
+#[test]
+fn run_pandoc_nonexistent_reference_doc_returns_error() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    if pandoc_path().is_none() {
+        eprintln!("skipping: pandoc not installed on PATH");
+        return;
+    }
+
+    let tmp = tempdir().expect("create temp dir");
+    let input = tmp.path().join("sample.md");
+    let output = tmp.path().join("out.docx");
+    let bad_ref = tmp.path().join("does_not_exist.docx");
+
+    std::fs::write(&input, "# Hello\n\nWorld.\n").expect("write markdown");
+
+    let result = run_pandoc(&input, &output, Some(bad_ref.as_path()));
+    let err = result.expect_err("expected error when reference doc does not exist");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pandoc exited"),
+        "error should say 'pandoc exited', got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
