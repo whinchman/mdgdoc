@@ -92,10 +92,19 @@ token_path: /tmp/token.json
     tmp.flush().expect("flush");
 
     let cfg = load_config(Some(tmp.path().to_path_buf())).expect("load config");
-    assert_eq!(cfg.credentials_path, std::path::PathBuf::from("/tmp/creds.json"));
+    assert_eq!(
+        cfg.credentials_path,
+        std::path::PathBuf::from("/tmp/creds.json")
+    );
     assert_eq!(cfg.token_path, std::path::PathBuf::from("/tmp/token.json"));
-    assert!(cfg.default_folder_id.is_none(), "default_folder_id should be None when absent");
-    assert!(cfg.templates.is_empty(), "templates map should be empty when absent");
+    assert!(
+        cfg.default_folder_id.is_none(),
+        "default_folder_id should be None when absent"
+    );
+    assert!(
+        cfg.templates.is_empty(),
+        "templates map should be empty when absent"
+    );
 }
 
 /// `load_config` returns an error when the YAML is structurally invalid.
@@ -120,7 +129,10 @@ fn load_config_missing_required_field_returns_error() {
     tmp.flush().expect("flush");
 
     let result = load_config(Some(tmp.path().to_path_buf()));
-    assert!(result.is_err(), "expected error when credentials_path is absent");
+    assert!(
+        result.is_err(),
+        "expected error when credentials_path is absent"
+    );
 }
 
 /// `template_path` returns the correct `PathBuf` for a known template name.

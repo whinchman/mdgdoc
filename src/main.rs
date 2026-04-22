@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use mdgdoc::config;
+use mdgdoc::pandoc::run_pandoc;
 
 mod drive;
-mod pandoc;
 
 /// Markdown → styled docx / Google Doc / PDF
 #[derive(Parser)]
@@ -73,11 +73,35 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Init => cmd_init()?,
-        Cmd::Convert { .. } => todo!("not yet implemented"),
+        Cmd::Convert {
+            input,
+            template,
+            output,
+        } => cmd_convert(cli.config, input, template, output)?,
         Cmd::Upload { .. } => todo!("not yet implemented"),
         Cmd::Pdf { .. } => todo!("not yet implemented"),
     }
 
+    Ok(())
+}
+
+/// Convert a markdown file to a styled `.docx`.
+fn cmd_convert(
+    config_path: Option<PathBuf>,
+    input: PathBuf,
+    template: String,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    let reference_doc = config::template_path(&cfg, &template)?;
+
+    let out = match output {
+        Some(p) => p,
+        None => input.with_extension("docx"),
+    };
+
+    run_pandoc(&input, &out, reference_doc.as_deref())?;
+    println!("Converted: {}", out.display());
     Ok(())
 }
 
