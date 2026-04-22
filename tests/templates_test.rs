@@ -21,29 +21,58 @@ fn make_fake_docx(dir: &std::path::Path, name: &str) {
 // list_templates
 // ---------------------------------------------------------------------------
 
-/// When two .docx files exist they are returned sorted by stem.
+/// When two .docx files exist they are returned sorted by stem, using the real
+/// `list_templates()` function via the `MDGDOC_TEMPLATES_DIR` env override.
 #[test]
 fn list_templates_returns_sorted_stems() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
     let tmp = TempDir::new().expect("tempdir");
     make_fake_docx(tmp.path(), "zebra.docx");
     make_fake_docx(tmp.path(), "alpha.docx");
 
-    // list_templates reads from the real templates_dir; we can't override it from
-    // outside, so call the internal helper that accepts a path directly.
-    let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(tmp.path())
-        .expect("read_dir")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("docx"))
-        .map(|e| {
-            let stem = e.path().file_stem().unwrap().to_string_lossy().to_string();
-            (stem, e.path())
-        })
-        .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", tmp.path()) };
+    let result = templates::list_templates();
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
 
+    let entries = result.expect("list_templates should succeed");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].0, "alpha");
     assert_eq!(entries[1].0, "zebra");
+}
+
+/// `list_templates` returns an empty vec when the directory exists but is empty.
+#[test]
+fn list_templates_empty_dir_returns_empty_vec() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let tmp = TempDir::new().expect("tempdir");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", tmp.path()) };
+    let result = templates::list_templates();
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    let entries = result.expect("list_templates should succeed on empty dir");
+    assert!(entries.is_empty(), "expected empty vec for empty dir");
+}
+
+/// `list_templates` ignores non-.docx files.
+#[test]
+fn list_templates_ignores_non_docx_files() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let tmp = TempDir::new().expect("tempdir");
+    make_fake_docx(tmp.path(), "real.docx");
+    std::fs::write(tmp.path().join("readme.txt"), b"ignore me").expect("write txt");
+    std::fs::write(tmp.path().join("notes.md"), b"ignore me").expect("write md");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", tmp.path()) };
+    let result = templates::list_templates();
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    let entries = result.expect("list_templates should succeed");
+    assert_eq!(entries.len(), 1, "only .docx files should be listed");
+    assert_eq!(entries[0].0, "real");
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +106,28 @@ fn cmd_scrape_copies_file_to_templates_dir() {
     let dest = dest_dir.path().join("report.docx");
     assert!(dest.exists(), "scraped file should exist");
     assert_eq!(std::fs::read(&dest).expect("read dest"), b"PK stub content");
+}
+
+/// cmd_scrape derives the template name from the source file stem when `name` is None.
+#[test]
+fn cmd_scrape_derives_name_from_file_stem() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let src_dir = TempDir::new().expect("src tempdir");
+    let dest_dir = TempDir::new().expect("dest tempdir");
+
+    let src = src_dir.path().join("company-template.docx");
+    std::fs::write(&src, b"PK content").expect("write src");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", dest_dir.path()) };
+    let result = templates::cmd_scrape(&src, None, false);
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    result.expect("cmd_scrape with name=None should succeed");
+
+    let dest = dest_dir.path().join("company-template.docx");
+    assert!(dest.exists(), "file should be named after the source stem");
+    assert_eq!(std::fs::read(&dest).expect("read dest"), b"PK content");
 }
 
 /// cmd_scrape with force=true overwrites an existing file silently.
@@ -180,5 +231,46 @@ fn template_path_missing_returns_error() {
         result.is_err(),
         "expected error for missing template, got: {:?}",
         result
+    );
+}
+
+/// template_path resolves to the correct path for an existing template.
+#[test]
+fn template_path_resolves_existing_template() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let tmp = TempDir::new().expect("tempdir");
+    make_fake_docx(tmp.path(), "mytemplate.docx");
+
+    unsafe { std::env::set_var("MDGDOC_TEMPLATES_DIR", tmp.path()) };
+    let result = template_path("mytemplate");
+    unsafe { std::env::remove_var("MDGDOC_TEMPLATES_DIR") };
+
+    let path: PathBuf = result
+        .expect("template_path should succeed for existing template")
+        .expect("expected Some path, got None");
+    assert!(
+        path.exists(),
+        "resolved path should point to an existing file"
+    );
+    assert_eq!(
+        path.file_name().and_then(|s| s.to_str()),
+        Some("mytemplate.docx")
+    );
+}
+
+/// template_path rejects a name with path separators (validates before stat).
+#[test]
+fn template_path_rejects_traversal_name() {
+    let result = template_path("../escape");
+    assert!(
+        result.is_err(),
+        "expected error for traversal name, got: {:?}",
+        result
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("plain filename"),
+        "error should mention plain filename, got: {err}"
     );
 }
