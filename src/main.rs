@@ -6,6 +6,7 @@ use uuid::Uuid;
 use mdgdoc::config;
 use mdgdoc::drive::{get_token, resolve_doc_name, resolve_folder_id, upload_docx};
 use mdgdoc::pandoc::{run_libreoffice, run_pandoc};
+use mdgdoc::templates;
 
 /// Markdown → styled docx / Google Doc / PDF
 #[derive(Parser)]
@@ -28,9 +29,9 @@ enum Cmd {
     Convert {
         /// Input markdown file
         input: PathBuf,
-        /// Template name defined in config
-        #[arg(short, long, default_value = "default")]
-        template: String,
+        /// Template name, or "none" to skip styling (omit to pick interactively)
+        #[arg(short, long)]
+        template: Option<String>,
         /// Output path (defaults to input with .docx extension)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -40,9 +41,9 @@ enum Cmd {
     Upload {
         /// Input markdown file
         input: PathBuf,
-        /// Template name defined in config
-        #[arg(short, long, default_value = "default")]
-        template: String,
+        /// Template name, or "none" to skip styling (omit to pick interactively)
+        #[arg(short, long)]
+        template: Option<String>,
         /// Target Google Drive folder ID (overrides config)
         #[arg(short, long)]
         folder: Option<String>,
@@ -58,13 +59,36 @@ enum Cmd {
     Pdf {
         /// Input markdown file
         input: PathBuf,
-        /// Template name defined in config
-        #[arg(short, long, default_value = "default")]
-        template: String,
+        /// Template name, or "none" to skip styling (omit to pick interactively)
+        #[arg(short, long)]
+        template: Option<String>,
         /// Output path (defaults to input with .pdf extension)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Manage reference-doc templates
+    Template {
+        #[command(subcommand)]
+        action: TemplateCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum TemplateCmd {
+    /// Copy a .docx file into the templates store
+    Scrape {
+        /// Path to the source .docx file
+        path: PathBuf,
+        /// Name to register the template under (defaults to filename stem)
+        #[arg(long)]
+        name: Option<String>,
+        /// Overwrite an existing template without prompting
+        #[arg(long)]
+        force: bool,
+    },
+    /// List installed templates
+    List,
 }
 
 #[tokio::main]
@@ -90,24 +114,38 @@ async fn main() -> Result<()> {
             template,
             output,
         } => cmd_pdf(cli.config, input, template, output)?,
+        Cmd::Template { action } => match action {
+            TemplateCmd::Scrape { path, name, force } => {
+                templates::cmd_scrape(&path, name.as_deref(), force)?
+            }
+            TemplateCmd::List => templates::cmd_list()?,
+        },
     }
 
     Ok(())
 }
 
+/// Resolve the `--template` argument for convert/pdf/upload.
+///
+/// - `None` (omitted) → launch interactive picker
+/// - `Some("none")` → bypass reference doc (`Ok(None)`)
+/// - `Some(name)` → look up `~/.config/mdgdoc/templates/<name>.docx`
+fn resolve_template(template: Option<&str>) -> Result<Option<PathBuf>> {
+    match template {
+        None => templates::pick_interactive().map(Some),
+        Some("none") => Ok(None),
+        Some(name) => config::template_path(name),
+    }
+}
+
 /// Convert a markdown file to a styled `.docx`.
 fn cmd_convert(
-    config_path: Option<PathBuf>,
+    _config_path: Option<PathBuf>,
     input: PathBuf,
-    template: String,
+    template: Option<String>,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let reference_doc = if template == "none" {
-        None
-    } else {
-        let cfg = config::load_config(config_path)?;
-        config::template_path(&cfg, &template)?
-    };
+    let reference_doc = resolve_template(template.as_deref())?;
 
     let out = match output {
         Some(p) => p,
@@ -121,17 +159,12 @@ fn cmd_convert(
 
 /// Convert a markdown file to PDF via a temporary docx intermediate.
 fn cmd_pdf(
-    config_path: Option<PathBuf>,
+    _config_path: Option<PathBuf>,
     input: PathBuf,
-    template: String,
+    template: Option<String>,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let reference_doc = if template == "none" {
-        None
-    } else {
-        let cfg = config::load_config(config_path)?;
-        config::template_path(&cfg, &template)?
-    };
+    let reference_doc = resolve_template(template.as_deref())?;
 
     // Build a unique temp docx path: <tempdir>/<stem>-<uuid>.docx
     let stem = input
@@ -177,7 +210,7 @@ fn cmd_pdf(
 async fn cmd_upload(
     config_path: Option<PathBuf>,
     input: PathBuf,
-    template: String,
+    template: Option<String>,
     folder: Option<String>,
     name: Option<String>,
     keep_docx: bool,
@@ -196,11 +229,7 @@ async fn cmd_upload(
     let doc_name = resolve_doc_name(name.as_deref(), stem);
 
     // Resolve reference doc template.
-    let reference_doc = if template == "none" {
-        None
-    } else {
-        config::template_path(&cfg, &template)?
-    };
+    let reference_doc = resolve_template(template.as_deref())?;
 
     // Build temp docx path: <tmp>/<stem>-<uuid>.docx
     let temp_docx = std::env::temp_dir().join(format!("{stem}-{}.docx", Uuid::new_v4()));
@@ -236,10 +265,10 @@ fn cmd_init() -> Result<()> {
         .join("mdgdoc");
 
     let config_path = config_dir.join("config.yaml");
-    let templates_dir = config_dir.join("templates");
+    let tpl_dir = templates::templates_dir()?;
 
     std::fs::create_dir_all(&config_dir)?;
-    std::fs::create_dir_all(&templates_dir)?;
+    std::fs::create_dir_all(&tpl_dir)?;
 
     if config_path.exists() {
         println!(
@@ -251,6 +280,6 @@ fn cmd_init() -> Result<()> {
         println!("Created config at {}", config_path.display());
     }
 
-    println!("Templates directory: {}", templates_dir.display());
+    println!("Templates directory: {}", tpl_dir.display());
     Ok(())
 }
